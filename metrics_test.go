@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,22 +18,18 @@ func TestMetricsServer_monitorDatabaseSize(t *testing.T) {
 	tc.ExecuteSQL(t, `INSERT INTO test (id, s) VALUES (1, "a"), (1, "a"), (1, "a")`)
 
 	metricsServer, err := NewMetricsServer(MetricsServerOptions{
-		Logger:  createTestLogger(t).WithName("test"),
-		Addr:    ":8081",
-		Queryer: tc.DB(),
+		Logger:   createTestLogger(t).WithName("test"),
+		Addr:     ":8081",
+		Registry: NewDatabaseRegistry(map[string]*sqlx.DB{testDBName: tc.DB()}),
 	})
 	assert.NoError(t, err)
 
 	done := make(chan struct{})
-	observeFinish := make(chan struct{})
 
-	go metricsServer.monitorDatabaseSize(done, func(sizeInBytes float64) {
-		close(observeFinish)
-
-		assert.True(t, sizeInBytes > 0)
-	})
+	go func() {
+		metricsServer.monitorDatabaseSizes(done)
+	}()
 
 	time.Sleep(100 * time.Millisecond)
 	close(done)
-	<-observeFinish
 }

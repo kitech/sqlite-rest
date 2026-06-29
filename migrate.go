@@ -47,7 +47,14 @@ func createMigrateCmd() *cobra.Command {
 				return err
 			}
 
-			db, err := openDB(cmd)
+			dsns, err := cmd.Flags().GetStringSlice(cliFlagDBDSN)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", cliFlagDBDSN, err)
+			}
+			if len(dsns) != 1 {
+				return fmt.Errorf("migrate requires exactly one --%s", cliFlagDBDSN)
+			}
+			db, err := openDatabaseFromDSN("migrate", dsns[0])
 			if err != nil {
 				setupLogger.Error(err, "create db")
 				return err

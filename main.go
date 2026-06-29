@@ -9,12 +9,17 @@ import (
 
 const (
 	cliFlagDBDSN    = "db-dsn"
+	cliFlagDBDir    = "db-dir"
 	cliFlagLogLevel = "log-level"
 	cliFlagLogDevel = "log-devel"
 )
 
 func bindDBDSNFlag(fs *pflag.FlagSet) {
-	fs.String(cliFlagDBDSN, "", "Database data source name to use.")
+	fs.StringSlice(cliFlagDBDSN, []string{}, "Database data source name to use (can be specified multiple times, format: [name=]path).")
+}
+
+func bindDBDirFlag(fs *pflag.FlagSet) {
+	fs.String(cliFlagDBDir, "", "Directory containing database files (.db, .sqlite, .sqlite3).")
 }
 
 func createMainCmd() *cobra.Command {

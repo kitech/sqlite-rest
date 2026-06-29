@@ -21,6 +21,7 @@ import (
 )
 
 const (
+	routeVarDBName      = "dbName"
 	routeVarTableOrView = "tableOrView"
 )
 
@@ -29,8 +30,7 @@ type ServerOptions struct {
 	Addr            string
 	AuthOptions     ServerAuthOptions
 	SecurityOptions ServerSecurityOptions
-	Queryer         sqlx.QueryerContext
-	Execer          sqlx.ExecerContext
+	Registry        *DatabaseRegistry
 }
 
 func (opts *ServerOptions) bindCLIFlags(fs *pflag.FlagSet) {
@@ -56,22 +56,17 @@ func (opts *ServerOptions) defaults() error {
 		opts.Addr = ":8080"
 	}
 
-	if opts.Queryer == nil {
-		return fmt.Errorf(".Queryer is required")
-	}
-
-	if opts.Execer == nil {
-		return fmt.Errorf(".Execer is required")
+	if opts.Registry == nil {
+		return fmt.Errorf(".Registry is required")
 	}
 
 	return nil
 }
 
 type dbServer struct {
-	logger  logr.Logger
-	server  *http.Server
-	queryer sqlx.QueryerContext
-	execer  sqlx.ExecerContext
+	logger   logr.Logger
+	server   *http.Server
+	registry *DatabaseRegistry
 }
 
 func NewServer(opts *ServerOptions) (*dbServer, error) {
@@ -86,8 +81,7 @@ func NewServer(opts *ServerOptions) (*dbServer, error) {
 			// TODO: make it configurable
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-		queryer: opts.Queryer,
-		execer:  opts.Execer,
+		registry: opts.Registry,
 	}
 
 	serverMux := chi.NewRouter()
@@ -101,6 +95,7 @@ func NewServer(opts *ServerOptions) (*dbServer, error) {
 	)
 
 	{
+		routePattern := fmt.Sprintf("/{%s:[^/]+}/{%s:[^/]+}", routeVarDBName, routeVarTableOrView)
 		serverMux.
 			With(
 				opts.AuthOptions.createAuthMiddleware(func(w http.ResponseWriter, err error) {
@@ -113,7 +108,6 @@ func NewServer(opts *ServerOptions) (*dbServer, error) {
 				}),
 			).
 			Group(func(r chi.Router) {
-				routePattern := fmt.Sprintf("/{%s:[^/]+}", routeVarTableOrView)
 				r.With(recordRequestMetrics("queryTableOrView")).Get(routePattern, rv.handleQueryTableOrView)
 				r.With(recordRequestMetrics("insertTable")).Post(routePattern, rv.handleInsertTable)
 				r.With(recordRequestMetrics("updateTable")).Patch(routePattern, rv.handleUpdateTable)
@@ -125,6 +119,12 @@ func NewServer(opts *ServerOptions) (*dbServer, error) {
 	rv.server.Handler = serverMux
 
 	return rv, nil
+}
+
+func (server *dbServer) getDB(req *http.Request) *sqlx.DB {
+	dbName := chi.URLParam(req, routeVarDBName)
+	db, _ := server.registry.Get(dbName)
+	return db
 }
 
 func (server *dbServer) Start(done <-chan struct{}) {
@@ -175,6 +175,7 @@ func (server *dbServer) handleQueryTableOrView(
 	req *http.Request,
 ) {
 	target := chi.URLParam(req, routeVarTableOrView)
+	db := server.getDB(req)
 
 	logger := server.logger.WithValues("target", target, "route", "handleQueryTableOrView")
 
@@ -187,7 +188,7 @@ func (server *dbServer) handleQueryTableOrView(
 	}
 	logger.V(8).Info(selectStmt.Query)
 
-	rows, err := server.queryer.QueryxContext(req.Context(), selectStmt.Query, selectStmt.Values...)
+	rows, err := db.QueryxContext(req.Context(), selectStmt.Query, selectStmt.Values...)
 	if err != nil {
 		logger.Error(err, "query values")
 		server.responseError(w, err)
@@ -234,7 +235,7 @@ func (server *dbServer) handleQueryTableOrView(
 		logger.V(8).Info(countStmt.Query)
 
 		var count int64
-		if err := server.queryer.QueryRowxContext(
+		if err := db.QueryRowxContext(
 			req.Context(),
 			countStmt.Query, countStmt.Values...,
 		).Scan(&count); err != nil {
@@ -258,6 +259,7 @@ func (server *dbServer) handleInsertTable(
 	req *http.Request,
 ) {
 	target := chi.URLParam(req, routeVarTableOrView)
+	db := server.getDB(req)
 
 	logger := server.logger.WithValues("target", target, "route", "handleInsertTable")
 
@@ -270,7 +272,7 @@ func (server *dbServer) handleInsertTable(
 	}
 	logger.V(8).Info(insertStmt.Query)
 
-	_, err = server.execer.ExecContext(req.Context(), insertStmt.Query, insertStmt.Values...)
+	_, err = db.ExecContext(req.Context(), insertStmt.Query, insertStmt.Values...)
 	if err != nil {
 		server.responseError(w, err)
 		return
@@ -285,6 +287,7 @@ func (server *dbServer) handleUpdateTable(
 	req *http.Request,
 ) {
 	target := chi.URLParam(req, routeVarTableOrView)
+	db := server.getDB(req)
 
 	logger := server.logger.WithValues("target", target, "route", "handleUpdateTable")
 
@@ -297,7 +300,7 @@ func (server *dbServer) handleUpdateTable(
 	}
 	logger.V(8).Info(updateStmt.Query)
 
-	_, err = server.execer.ExecContext(req.Context(), updateStmt.Query, updateStmt.Values...)
+	_, err = db.ExecContext(req.Context(), updateStmt.Query, updateStmt.Values...)
 	if err != nil {
 		server.responseError(w, err)
 		return
@@ -311,6 +314,7 @@ func (server *dbServer) handleUpdateSingleEntity(
 	req *http.Request,
 ) {
 	target := chi.URLParam(req, routeVarTableOrView)
+	db := server.getDB(req)
 
 	logger := server.logger.WithValues("target", target, "route", "handleUpdateSingleEntity")
 
@@ -323,7 +327,7 @@ func (server *dbServer) handleUpdateSingleEntity(
 	}
 	logger.V(8).Info(updateStmt.Query)
 
-	_, err = server.execer.ExecContext(req.Context(), updateStmt.Query, updateStmt.Values...)
+	_, err = db.ExecContext(req.Context(), updateStmt.Query, updateStmt.Values...)
 	if err != nil {
 		server.responseError(w, err)
 		return
@@ -335,6 +339,7 @@ func (server *dbServer) handleDeleteTable(
 	req *http.Request,
 ) {
 	target := chi.URLParam(req, routeVarTableOrView)
+	db := server.getDB(req)
 
 	logger := server.logger.WithValues("target", target, "route", "handleDeleteTable")
 
@@ -347,7 +352,7 @@ func (server *dbServer) handleDeleteTable(
 	}
 	logger.V(8).Info(updateStmt.Query)
 
-	_, err = server.execer.ExecContext(req.Context(), updateStmt.Query, updateStmt.Values...)
+	_, err = db.ExecContext(req.Context(), updateStmt.Query, updateStmt.Values...)
 	if err != nil {
 		server.responseError(w, err)
 		return
@@ -373,16 +378,15 @@ func createServeCmd() *cobra.Command {
 				return err
 			}
 
-			db, err := openDB(cmd)
+			registry, err := openDatabases(cmd)
 			if err != nil {
-				setupLogger.Error(err, "failed to open db")
+				setupLogger.Error(err, "failed to open databases")
 				return err
 			}
-			defer db.Close()
+			defer registry.Close()
 
 			serverOpts.Logger = logger
-			serverOpts.Queryer = db
-			serverOpts.Execer = db
+			serverOpts.Registry = registry
 
 			server, err := NewServer(serverOpts)
 			if err != nil {
@@ -391,7 +395,7 @@ func createServeCmd() *cobra.Command {
 			}
 
 			metricsServerOpts.Logger = logger
-			metricsServerOpts.Queryer = db
+			metricsServerOpts.Registry = registry
 			metricsServer, err := NewMetricsServer(*metricsServerOpts)
 			if err != nil {
 				setupLogger.Error(err, "failed to create metrics server")
@@ -426,6 +430,7 @@ func createServeCmd() *cobra.Command {
 	metricsServerOpts.bindCLIFlags(cmd.Flags())
 	pprofServerOpts.bindCLIFlags(cmd.Flags())
 	bindDBDSNFlag(cmd.Flags())
+	bindDBDirFlag(cmd.Flags())
 
 	return cmd
 }

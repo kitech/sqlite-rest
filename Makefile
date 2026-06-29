@@ -31,7 +31,7 @@ build-server: fmt vet ## Build server.
 
 run-server: build-server ## Run server.
 	echo -n "test" > local_dev.token
-	./sqlite-rest serve --db-dsn ./test.sqlite3?_journal_mode=WAL --http-addr 127.0.0.1:8080 --metrics-addr 127.0.0.1:8081 --pprof-addr 127.0.0.1:8082 --log-devel --log-level 12 --auth-token-file local_dev.token --security-allow-table fruit
+	./sqlite-rest serve --db-dsn default=./test.sqlite3?_journal_mode=WAL --http-addr 127.0.0.1:8080 --metrics-addr 127.0.0.1:8081 --pprof-addr 127.0.0.1:8082 --log-devel --log-level 12 --auth-token-file local_dev.token --security-allow-table fruit
 
 run-migrate: build-server ## Run migration.
 	./sqlite-rest migrate --db-dsn ./test.sqlite3?_journal_mode=WAL --log-devel --log-level 12 ./data

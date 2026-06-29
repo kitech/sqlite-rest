@@ -53,9 +53,30 @@ $ sqlite3 bookstore.sqlite3 < examples/bookstore/data.sql
 
 ```
 $ echo -n "topsecret" > test.token
-$ sqlite-rest serve --auth-token-file test.token --security-allow-table books --db-dsn ./bookstore.sqlite3
+$ sqlite-rest serve --auth-token-file test.token --security-allow-table books --db-dsn default=./bookstore.sqlite3
 {"level":"info","ts":1672528510.825417,"logger":"db-server","caller":"sqlite-rest/server.go:121","msg":"server started","addr":":8080"}
 ... <omitted logs>
+```
+
+**Multiple databases:**
+
+```
+# Two named databases
+$ sqlite-rest serve --db-dsn books=./books.db --db-dsn logs=./logs.db --auth-token-file test.token
+
+# Directory of databases (all .db / .sqlite / .sqlite3 files)
+$ sqlite-rest serve --db-dir ./databases --auth-token-file test.token
+```
+
+When using a single unnamed database, the database name defaults to `default`.
+All API routes use the pattern `/{dbName}/{tableOrView}` regardless of how many databases are configured. For example:
+
+```
+# Query the "books" table in the "default" database
+$ curl http://127.0.0.1:8080/default/books
+
+# Query the "books" table in the "store" database
+$ curl http://127.0.0.1:8080/store/books
 ```
 
 ### Generate authentication token
@@ -78,7 +99,7 @@ $ sqlite-rest serve --auth-token-file test.token --security-allow-table books --
 **Querying by book id**
 
 ```
-$ curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8080/books?id=eq.1
+$ curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8080/default/books?id=eq.1
 [
  {
   "author": "Stephen King",
@@ -92,7 +113,7 @@ $ curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8080/books?id=eq.
 **Querying by book price**
 
 ```
-$ curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8080/books?price=lt.10
+$ curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8080/default/books?price=lt.10
 [
  {
   "author": "Alice Hoffman",

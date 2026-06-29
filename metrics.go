@@ -27,9 +27,9 @@ const metricsServerDisabledAddr = ""
 const pprofServerDisabledAddr = ""
 
 type MetricsServerOptions struct {
-	Logger  logr.Logger
-	Addr    string
-	Queryer sqlx.QueryerContext
+	Logger   logr.Logger
+	Addr     string
+	Registry *DatabaseRegistry
 }
 
 func (opts *MetricsServerOptions) bindCLIFlags(fs *pflag.FlagSet) {
@@ -45,8 +45,8 @@ func (opts *MetricsServerOptions) defaults() error {
 	}
 
 	if opts.Addr != metricsServerDisabledAddr {
-		if opts.Queryer == nil {
-			return fmt.Errorf(".Queryer is required")
+		if opts.Registry == nil {
+			return fmt.Errorf(".Registry is required")
 		}
 	}
 
@@ -54,9 +54,9 @@ func (opts *MetricsServerOptions) defaults() error {
 }
 
 type metricsServer struct {
-	logger  logr.Logger
-	server  *http.Server
-	queryer sqlx.QueryerContext
+	logger   logr.Logger
+	server   *http.Server
+	registry *DatabaseRegistry
 }
 
 func NewMetricsServer(opts MetricsServerOptions) (*metricsServer, error) {
@@ -65,8 +65,8 @@ func NewMetricsServer(opts MetricsServerOptions) (*metricsServer, error) {
 	}
 
 	srv := &metricsServer{
-		logger:  opts.Logger,
-		queryer: opts.Queryer,
+		logger:   opts.Logger,
+		registry: opts.Registry,
 	}
 
 	if opts.Addr == metricsServerDisabledAddr {
@@ -83,23 +83,26 @@ func NewMetricsServer(opts MetricsServerOptions) (*metricsServer, error) {
 	return srv, nil
 }
 
-func (server *metricsServer) monitorDatabaseSize(
-	done <-chan struct{},
-	observeFn func(sizeInBytes float64),
-) {
+func (server *metricsServer) observeDatabaseSize(dbName string, db *sqlx.DB) {
 	const dbSizeQuery = `SELECT
 	page_count * page_size
 	FROM pragma_page_count(), pragma_page_size();`
 
-	observe := func() {
-		var size int64
-		err := server.queryer.QueryRowxContext(context.Background(), dbSizeQuery).Scan(&size)
-		if err != nil {
-			server.logger.Error(err, "failed to get database size")
-			return
-		}
+	var size int64
+	err := db.QueryRowxContext(context.Background(), dbSizeQuery).Scan(&size)
+	if err != nil {
+		server.logger.Error(err, "failed to get database size", "db_name", dbName)
+		return
+	}
 
-		observeFn(float64(size))
+	metricsDatabaseSize.WithLabelValues(dbName).Set(float64(size))
+}
+
+func (server *metricsServer) monitorDatabaseSizes(done <-chan struct{}) {
+	observe := func() {
+		for name, db := range server.registry.dbs {
+			server.observeDatabaseSize(name, db)
+		}
 	}
 	observe()
 
@@ -121,10 +124,7 @@ func (server *metricsServer) Start(done <-chan struct{}) {
 		return
 	}
 
-	go server.monitorDatabaseSize(done, func(sizeInBytes float64) {
-		metricsDatabaseSize.Set(sizeInBytes)
-		server.logger.V(8).Info("database size", "sizeInBytes", sizeInBytes)
-	})
+	go server.monitorDatabaseSizes(done)
 	go server.server.ListenAndServe()
 
 	server.logger.Info("metrics server started", "addr", server.server.Addr)
@@ -138,6 +138,7 @@ func (server *metricsServer) Start(done <-chan struct{}) {
 
 const (
 	metricsNamespace            = "sqlite_rest"
+	metricsLabelDBName          = "db_name"
 	metricsLabelTarget          = "target"    // name of the table/view
 	metricsLabelTargetOperation = "operation" // name of the operation
 	metricsLabelHTTPCode        = "http_code" // HTTP response code
@@ -166,7 +167,7 @@ var (
 			Name:      "http_requests_total",
 			Help:      "Total number of HTTP requests",
 		},
-		[]string{metricsLabelTarget, metricsLabelTargetOperation, metricsLabelHTTPCode},
+		[]string{metricsLabelDBName, metricsLabelTarget, metricsLabelTargetOperation, metricsLabelHTTPCode},
 	)
 
 	metricsRequestLatency = promauto.NewHistogramVec(
@@ -176,15 +177,16 @@ var (
 			Help:      "HTTP request latency",
 			Buckets:   []float64{1, 10, 100, 500, 1000},
 		},
-		[]string{metricsLabelTarget, metricsLabelTargetOperation, metricsLabelHTTPCode},
+		[]string{metricsLabelDBName, metricsLabelTarget, metricsLabelTargetOperation, metricsLabelHTTPCode},
 	)
 
-	metricsDatabaseSize = promauto.NewGauge(
+	metricsDatabaseSize = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: metricsNamespace,
 			Name:      "database_size_bytes",
 			Help:      "Size of the database file",
 		},
+		[]string{metricsLabelDBName},
 	)
 )
 
@@ -196,12 +198,13 @@ func recordRequestMetrics(op string) func(http.Handler) http.Handler {
 
 			defer func() {
 				httpCode := fmt.Sprint(ww.Status())
+				dbName := chi.URLParam(r, routeVarDBName)
 				target := chi.URLParam(r, routeVarTableOrView)
 				metricsRequestTotal.
-					WithLabelValues(target, op, httpCode).
+					WithLabelValues(dbName, target, op, httpCode).
 					Inc()
 				metricsRequestLatency.
-					WithLabelValues(target, op, httpCode).
+					WithLabelValues(dbName, target, op, httpCode).
 					Observe(float64(time.Since(start).Milliseconds()))
 			}()
 

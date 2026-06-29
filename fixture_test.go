@@ -23,6 +23,8 @@ import (
 	"k8s.io/klog/v2/ktesting"
 )
 
+const testDBName = "default"
+
 var enabledTestTables = []string{"test", "test_view"}
 
 type TestContext struct {
@@ -30,6 +32,7 @@ type TestContext struct {
 	db        *sqlx.DB
 	cleanUpDB func(t testing.TB)
 	authToken string
+	dbName    string
 }
 
 func NewTestContextWithDB(
@@ -44,6 +47,7 @@ func NewTestContextWithDB(
 		db:        db,
 		cleanUpDB: cleanUpDB,
 		authToken: authToken,
+		dbName:    testDBName,
 	}
 
 	return rv
@@ -72,7 +76,7 @@ func (tc *TestContext) ServerURL() *url.URL {
 
 func (tc *TestContext) Client() *postgrest.Client {
 	rv := postgrest.NewClient(
-		tc.ServerURL().String(),
+		tc.ServerURL().String()+"/"+tc.dbName,
 		"http",
 		nil,
 	)
@@ -93,7 +97,8 @@ func (tc *TestContext) NewRequest(
 	method string, path string,
 	body io.Reader,
 ) *http.Request {
-	req, err := http.NewRequest(method, tc.ServerURL().String()+"/"+path, body)
+	fullPath := tc.dbName + "/" + path
+	req, err := http.NewRequest(method, tc.ServerURL().String()+"/"+fullPath, body)
 	assert.NoError(t, err)
 
 	if tc.authToken != "" {
@@ -132,9 +137,8 @@ func createTestContextUsingInMemoryDB(t testing.TB) *TestContext {
 
 	t.Log("creating server")
 	serverOpts := &ServerOptions{
-		Logger:  createTestLogger(t).WithName("test"),
-		Queryer: db,
-		Execer:  db,
+		Logger:   createTestLogger(t).WithName("test"),
+		Registry: NewDatabaseRegistry(map[string]*sqlx.DB{testDBName: db}),
 	}
 	serverOpts.AuthOptions.disableAuth = true
 	serverOpts.SecurityOptions.EnabledTableOrViews = enabledTestTables
@@ -188,9 +192,8 @@ func createTestContextWithHMACTokenAuth(t testing.TB) *TestContext {
 
 	t.Log("creating server")
 	serverOpts := &ServerOptions{
-		Logger:  createTestLogger(t).WithName("test"),
-		Queryer: db,
-		Execer:  db,
+		Logger:   createTestLogger(t).WithName("test"),
+		Registry: NewDatabaseRegistry(map[string]*sqlx.DB{testDBName: db}),
 	}
 	serverOpts.AuthOptions.TokenFilePath = testTokenFile
 	serverOpts.SecurityOptions.EnabledTableOrViews = enabledTestTables
@@ -264,9 +267,8 @@ func createTestContextWithRSATokenAuth(t testing.TB) *TestContext {
 
 	t.Log("creating server")
 	serverOpts := &ServerOptions{
-		Logger:  createTestLogger(t).WithName("test"),
-		Queryer: db,
-		Execer:  db,
+		Logger:   createTestLogger(t).WithName("test"),
+		Registry: NewDatabaseRegistry(map[string]*sqlx.DB{testDBName: db}),
 	}
 	serverOpts.AuthOptions.RSAPublicKeyFilePath = testTokenFile
 	serverOpts.SecurityOptions.EnabledTableOrViews = enabledTestTables
